@@ -134,6 +134,14 @@ func (v vec3) Mul(u vec3) vec3 {
 	}
 }
 
+func Neg(v vec3) vec3 {
+	return vec3{
+		x: -v.x,
+		y: -v.y,
+		z: -v.z,
+	}
+}
+
 func (v vec3) Mulf(t float64) vec3 {
 	return vec3{
 		x: v.x * t,
@@ -151,6 +159,10 @@ func Mulf(v vec3, t float64) vec3 {
 }
 
 func (v vec3) Div(t float64) vec3 {
+	return v.Mulf(1 / t)
+}
+
+func Divf(v vec3, t float64) vec3 {
 	return v.Mulf(1 / t)
 }
 
@@ -219,17 +231,67 @@ func (r ray) Colour() colour {
 
 func hitSphere(center point3, radius float64, r ray) float64 {
 	oc := Sub(r.orig, center)
-	a := Dot(r.dir, r.dir)
-	b := Dot(oc, r.dir) * 2
-	c := Dot(oc, oc) - radius*radius
-	// oc := r.orig.Sub(center)
-	// a := r.dir.Dot(r.dir)
-	// b := oc.Dot(r.dir) * 2
-	// c := oc.Dot(oc) - radius*radius
-	discriminant := b*b - 4*a*c
+	a := r.dir.Len_squared()
+	halfB := Dot(oc, r.dir)
+	c := oc.Len_squared() - radius*radius
+	discriminant := halfB*halfB - a*c
+
 	if discriminant < 0 {
-		return -1.0
+		return -1
 	} else {
-		return (-b - math.Sqrt(discriminant)) / (2.0 * a)
+		return (-halfB - math.Sqrt(discriminant)) / a
 	}
+}
+
+type hittable interface {
+	hit() bool
+}
+
+type hitRecord struct {
+	p           point3
+	normal      vec3
+	t           float64
+	isFrontFace bool
+}
+
+func (h *hitRecord) setFaceNormal(r ray, outwardNormal vec3) {
+	h.isFrontFace = Dot(r.dir, outwardNormal) < 0
+	if h.isFrontFace {
+		h.normal = outwardNormal
+	} else {
+		h.normal = Neg(outwardNormal)
+	}
+}
+
+type sphere struct {
+	center point3
+	radius float64
+}
+
+func (s sphere) hit(r ray, tMin, tMax float64, rec *hitRecord) bool {
+	oc := Sub(r.orig, s.center)
+	a := r.dir.Len_squared()
+	halfB := Dot(oc, r.dir)
+	c := oc.Len_squared() - s.radius*s.radius
+	discriminant := halfB*halfB - a*c
+
+	if discriminant < 0 {
+		return false
+	}
+
+	sqrtd := math.Sqrt(discriminant)
+	root := (-halfB - sqrtd) / a
+	if tMin < root || root < tMax {
+		root := (-halfB + sqrtd) / a
+		if tMin > root || root < tMax {
+			return false
+		}
+	}
+
+	rec.t = root
+	rec.p = r.At(rec.t)
+	outwardNormal := Divf(Sub(rec.p, s.center), s.radius)
+	rec.setFaceNormal(r, outwardNormal)
+
+	return true
 }
