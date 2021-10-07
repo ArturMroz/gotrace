@@ -15,7 +15,8 @@ const (
 	aspectRatio     = 16.0 / 9.0
 	imageWidth      = 400
 	imageHeight     = int(imageWidth / aspectRatio)
-	samplesPerPixel = 50
+	samplesPerPixel = 10
+	maxDepth        = 10
 
 	// camera
 
@@ -54,15 +55,16 @@ func main() {
 				// r := ray{origin, lowerLeftCorner.Add(horizontal.Mulf(v)).Add(vertical.Mulf(u)).Sub(origin)}
 				// r := ray{origin, vadd(lowerLeftCorner, horizontal.Mulf(v), vertical.Mulf(u)).Sub(origin)}
 				r := ray{origin, lowerLeftCorner.Add2(horizontal.Mulf(v), vertical.Mulf(u)).Sub(origin)}
-				c = Add(c, RayColour(r, world))
+				c = Add(c, RayColour(r, world, maxDepth))
 				// c := RayColour(r, sphere{point3{0, 0, -1}, 0.5})
 
 			}
-			fmt.Fprintln(w, c.String2(samplesPerPixel))
+			fmt.Fprintln(w, c.WriteColour(samplesPerPixel))
 		}
 	}
 
 	w.Flush()
+	log.Println("Done!")
 }
 
 func clamp(x, min, max float64) float64 {
@@ -213,25 +215,58 @@ func (v vec3) Unit_vector() vec3 {
 	return v.Div(v.Len())
 }
 
+func RandVec() vec3 {
+	return vec3{
+		x: rand.Float64(),
+		y: rand.Float64(),
+		z: rand.Float64(),
+	}
+}
+
+func RandVecRange(min, max float64) vec3 {
+	return vec3{
+		x: RandFloat64(-1, 1),
+		y: RandFloat64(-1, 1),
+		z: RandFloat64(-1, 1),
+	}
+}
+
+func RandInUnitSphere() vec3 {
+	for {
+		p := RandVecRange(-1, 1)
+		if p.Len_squared() < 1 {
+			return p
+		}
+	}
+}
+
+func RandUnitVector() vec3 {
+	return RandInUnitSphere().Unit_vector()
+}
+
+func RandFloat64(min, max float64) float64 {
+	return min + (max-min)*rand.Float64()
+}
+
 func (c colour) String() string {
 	return fmt.Sprintf("%d %d %d", int(c.x*255.999), int(c.y*255.999), int(c.z*255.999))
 }
 
-func (c colour) String2(samplesPerPixel int) string {
-	// TODO that's too much logic for a printing func
+func (c colour) WriteColour(samplesPerPixel int) string {
 	r := c.x
 	g := c.y
 	b := c.z
 
+	// divide the colour by number of samples and gamma correct for gamma=2.0
 	scale := 1.0 / float64(samplesPerPixel)
-	r *= scale
-	g *= scale
-	b *= scale
+	r = math.Sqrt(r * scale)
+	g = math.Sqrt(g * scale)
+	b = math.Sqrt(b * scale)
 
 	return fmt.Sprintf("%d %d %d",
-		int(256*clamp(r, 0.0, 0.999)),
-		int(256*clamp(g, 0.0, 0.999)),
-		int(256*clamp(b, 0.0, 0.999)),
+		int(256*clamp(r, 0, 0.999)),
+		int(256*clamp(g, 0, 0.999)),
+		int(256*clamp(b, 0, 0.999)),
 	)
 }
 
@@ -248,31 +283,23 @@ func (r ray) At(t float64) point3 {
 	return Add(r.orig, Mulf(r.dir, t))
 }
 
-func RayColour(r ray, hittable hittable) colour {
-	// var rec hitRecord
-
-	// rec := &hitRecord{}
-	// if hittable.hit1(r, 0, math.Inf(1), rec) {
-
-	if rec, isHit := hittable.hit2(r, 0, math.Inf(1)); isHit {
-		// return colour{1, 0, 0}
-
-		// log.Println("in ray colour", rec)
-		return Mulf(Add(rec.normal, colour{1, 1, 1}), .5)
+func RayColour(r ray, hittable hittable, depth int) colour {
+	if depth <= 0 {
+		return colour{0, 0, 0}
 	}
-	// if t > 0 {
-	// 	n := Sub(r.At(t), vec3{0, 0, -1}.Unit_vector())
-	// 	return Mulf(colour{n.x + 1, n.y + 1, n.z + 1}, 0.5)
-	// }
+
+	if rec, isHit := hittable.hit2(r, 0.001, math.Inf(1)); isHit {
+		// target := Add(Add(rec.p, rec.normal), RandInUnitSphere())
+		target := vadd(rec.p, rec.normal, RandUnitVector())
+		c := RayColour(ray{rec.p, Sub(target, rec.p)}, hittable, depth-1)
+		return Mulf(c, .5)
+	}
 
 	unitDirection := r.dir.Unit_vector()
 	t := 0.5 * (unitDirection.y + 1.0)
-	// c1 := colour{1.0, 1.0, 1.0}.Mulf(1.0 - t)
-	// c2 := colour{0.5, 0.7, 1.0}.Mulf(t)
-	// return c1.Add(c2)
-	//
 	c1 := Mulf(colour{1.0, 1.0, 1.0}, 1.0-t)
 	c2 := Mulf(colour{0.5, 0.7, 1.0}, t)
+
 	return Add(c1, c2)
 }
 
@@ -381,12 +408,9 @@ type hittableList struct {
 
 func (hl hittableList) hit2(r ray, tMin, tMax float64) (rec hitRecord, hitAnything bool) {
 	closestSoFar := tMax
-	isHit := false
-	tempRec := hitRecord{}
 
 	for _, o := range hl.objects {
-		tempRec, isHit = o.hit2(r, tMin, closestSoFar)
-		if isHit {
+		if tempRec, isHit := o.hit2(r, tMin, closestSoFar); isHit {
 			hitAnything = true
 			closestSoFar = tempRec.t
 			rec = tempRec
