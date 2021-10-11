@@ -15,8 +15,8 @@ const (
 	aspectRatio     = 16.0 / 9.0
 	imageWidth      = 400
 	imageHeight     = int(imageWidth / aspectRatio)
-	samplesPerPixel = 10
-	maxDepth        = 10
+	samplesPerPixel = 5
+	maxDepth        = 5
 
 	// camera
 
@@ -42,8 +42,11 @@ func main() {
 	w := bufio.NewWriter(file)
 	fmt.Fprintf(w, "P3\n%d %d\n255\n", imageWidth, imageHeight)
 
-	world.objects = append(world.objects, sphere{point3{0, -100.5, -1}, 100})
-	world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5})
+	world.objects = append(world.objects, sphere{point3{0, -100.5, -1}, 100, lambertian{colour{.8, .8, 0}}})
+
+	world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, lambertian{colour{.7, .3, .3}}})
+	world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, metal{colour{.8, .8, .8}}})
+	world.objects = append(world.objects, sphere{point3{1, 0, -1}, 0.5, metal{colour{.8, .6, .2}}})
 
 	for i := imageHeight - 1; i >= 0; i-- {
 		// log.Println("Scanlines remaining:", imageHeight-i)
@@ -52,13 +55,10 @@ func main() {
 			for s := 0; s <= samplesPerPixel; s++ {
 				u := (float64(i) + rand.Float64()) / float64(imageHeight)
 				v := (float64(j) + rand.Float64()) / float64(imageWidth)
-				// r := ray{origin, lowerLeftCorner.Add(horizontal.Mulf(v)).Add(vertical.Mulf(u)).Sub(origin)}
-				// r := ray{origin, vadd(lowerLeftCorner, horizontal.Mulf(v), vertical.Mulf(u)).Sub(origin)}
 				r := ray{origin, lowerLeftCorner.Add2(horizontal.Mulf(v), vertical.Mulf(u)).Sub(origin)}
 				c = Add(c, RayColour(r, world, maxDepth))
-				// c := RayColour(r, sphere{point3{0, 0, -1}, 0.5})
-
 			}
+
 			fmt.Fprintln(w, c.WriteColour(samplesPerPixel))
 		}
 	}
@@ -155,6 +155,14 @@ func (v vec3) Mul(u vec3) vec3 {
 	}
 }
 
+func Mul(v, u vec3) vec3 {
+	return vec3{
+		x: v.x * u.x,
+		y: v.y * u.y,
+		z: v.z * u.z,
+	}
+}
+
 func Neg(v vec3) vec3 {
 	return vec3{
 		x: -v.x,
@@ -211,8 +219,13 @@ func (v vec3) Cross(u vec3) vec3 {
 	}
 }
 
-func (v vec3) Unit_vector() vec3 {
+func (v vec3) UnitVector() vec3 {
 	return v.Div(v.Len())
+}
+
+func (v vec3) IsNearZero() bool {
+	s := 1e-8
+	return math.Abs(v.x) < s && math.Abs(v.y) < s && math.Abs(v.z) < s
 }
 
 func RandVec() vec3 {
@@ -241,7 +254,7 @@ func RandInUnitSphere() vec3 {
 }
 
 func RandUnitVector() vec3 {
-	return RandInUnitSphere().Unit_vector()
+	return RandInUnitSphere().UnitVector()
 }
 
 func RandFloat64(min, max float64) float64 {
@@ -270,6 +283,10 @@ func (c colour) WriteColour(samplesPerPixel int) string {
 	)
 }
 
+func Reflect(v, n vec3) vec3 {
+	return Sub(v, Mulf(n, 2*Dot(v, n)))
+}
+
 type point3 = vec3
 type colour = vec3
 
@@ -289,33 +306,23 @@ func RayColour(r ray, hittable hittable, depth int) colour {
 	}
 
 	if rec, isHit := hittable.hit2(r, 0.001, math.Inf(1)); isHit {
-		// target := Add(Add(rec.p, rec.normal), RandInUnitSphere())
-		target := vadd(rec.p, rec.normal, RandUnitVector())
-		c := RayColour(ray{rec.p, Sub(target, rec.p)}, hittable, depth-1)
-		return Mulf(c, .5)
+		var scattered ray
+		var attenuation colour
+
+		if rec.material.Scatter(&r, &rec, &attenuation, &scattered) {
+			return Mul(attenuation, RayColour(scattered, world, depth-1))
+		}
+
+		return colour{0, 0, 0}
 	}
 
-	unitDirection := r.dir.Unit_vector()
+	unitDirection := r.dir.UnitVector()
 	t := 0.5 * (unitDirection.y + 1.0)
 	c1 := Mulf(colour{1.0, 1.0, 1.0}, 1.0-t)
 	c2 := Mulf(colour{0.5, 0.7, 1.0}, t)
 
 	return Add(c1, c2)
 }
-
-// func hitSphere(center point3, radius float64, r ray) float64 {
-// 	oc := Sub(r.orig, center)
-// 	a := r.dir.Len_squared()
-// 	halfB := Dot(oc, r.dir)
-// 	c := oc.Len_squared() - radius*radius
-// 	discriminant := halfB*halfB - a*c
-
-// 	if discriminant < 0 {
-// 		return -1
-// 	} else {
-// 		return (-halfB - math.Sqrt(discriminant)) / a
-// 	}
-// }
 
 type hittable interface {
 	hit1(r ray, tMin, tMax float64, rec *hitRecord) bool
@@ -327,6 +334,7 @@ type hitRecord struct {
 	normal      vec3
 	t           float64
 	isFrontFace bool
+	material    material
 }
 
 func (h *hitRecord) setFaceNormal(r ray, outwardNormal vec3) {
@@ -339,8 +347,9 @@ func (h *hitRecord) setFaceNormal(r ray, outwardNormal vec3) {
 }
 
 type sphere struct {
-	center point3
-	radius float64
+	center   point3
+	radius   float64
+	material material
 }
 
 func (s sphere) hit1(r ray, tMin, tMax float64, rec *hitRecord) bool {
@@ -368,10 +377,9 @@ func (s sphere) hit1(r ray, tMin, tMax float64, rec *hitRecord) bool {
 	outwardNormal := Divf(Sub(rec.p, s.center), s.radius)
 	rec.setFaceNormal(r, outwardNormal)
 
-	// log.Println(rec)
-
 	return true
 }
+
 func (s sphere) hit2(r ray, tMin, tMax float64) (rec hitRecord, isHit bool) {
 	oc := Sub(r.orig, s.center)
 	a := r.dir.Len_squared()
@@ -396,8 +404,7 @@ func (s sphere) hit2(r ray, tMin, tMax float64) (rec hitRecord, isHit bool) {
 	rec.p = r.At(rec.t)
 	outwardNormal := Divf(Sub(rec.p, s.center), s.radius)
 	rec.setFaceNormal(r, outwardNormal)
-
-	// log.Println(rec)
+	rec.material = s.material
 
 	return rec, true
 }
@@ -421,7 +428,6 @@ func (hl hittableList) hit2(r ray, tMin, tMax float64) (rec hitRecord, hitAnythi
 }
 
 func (hl hittableList) hit1(r ray, tMin, tMax float64, rec *hitRecord) bool {
-	// tempRec := &hitRecord{}
 	hitAnything := false
 	closestSoFar := tMax
 
@@ -429,11 +435,6 @@ func (hl hittableList) hit1(r ray, tMin, tMax float64, rec *hitRecord) bool {
 		if o.hit1(r, tMin, closestSoFar, rec) {
 			hitAnything = true
 			closestSoFar = rec.t
-			// rec = tempRec
-			// rec.t = tempRec.t
-			// rec.p = tempRec.p
-			// rec.normal = tempRec.normal
-
 		}
 	}
 
@@ -444,4 +445,35 @@ func DegreesToRadians(degrees float64) float64 {
 	return degrees * math.Pi / 180
 }
 
-// func RandomFloat(min, max) float64
+type material interface {
+	Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scattered *ray) bool
+}
+
+type lambertian struct {
+	albedo colour
+}
+
+type metal struct {
+	albedo colour
+}
+
+func (l lambertian) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scattered *ray) bool {
+	scatterDirection := Add(rec.normal, RandUnitVector())
+	// catch degenerate scatter direction
+	if scatterDirection.IsNearZero() {
+		scatterDirection = rec.normal
+	}
+
+	*scattered = ray{rec.p, scatterDirection}
+	*attenuation = l.albedo
+
+	return true
+}
+
+func (m metal) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scattered *ray) bool {
+	reflected := Reflect(rIn.dir.UnitVector(), rec.normal)
+	*scattered = ray{rec.p, reflected}
+	*attenuation = m.albedo
+
+	return Dot(scattered.dir, rec.normal) > 0
+}
