@@ -16,7 +16,7 @@ const (
 	imageWidth      = 400
 	imageHeight     = int(imageWidth / aspectRatio)
 	samplesPerPixel = 5
-	maxDepth        = 5
+	maxDepth        = 10
 
 	// camera
 
@@ -44,9 +44,11 @@ func main() {
 
 	world.objects = append(world.objects, sphere{point3{0, -100.5, -1}, 100, lambertian{colour{.8, .8, 0}}})
 
-	world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, lambertian{colour{.7, .3, .3}}})
-	world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, metal{colour{.8, .8, .8}}})
-	world.objects = append(world.objects, sphere{point3{1, 0, -1}, 0.5, metal{colour{.8, .6, .2}}})
+	// world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, lambertian{colour{.7, .3, .3}}})
+	world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, dielectric{0.1}})
+	world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, dielectric{0.1}})
+	// world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, metal{colour{.8, .8, .8}, .3}})
+	world.objects = append(world.objects, sphere{point3{1, 0, -1}, 0.5, metal{colour{.8, .6, .2}, 1}})
 
 	for i := imageHeight - 1; i >= 0; i-- {
 		// log.Println("Scanlines remaining:", imageHeight-i)
@@ -196,10 +198,10 @@ func Divf(v vec3, t float64) vec3 {
 }
 
 func (v vec3) Len() float64 {
-	return math.Sqrt(v.Len_squared())
+	return math.Sqrt(v.LenSquared())
 }
 
-func (v vec3) Len_squared() float64 {
+func (v vec3) LenSquared() float64 {
 	return v.x*v.x + v.y*v.y + v.z*v.z
 }
 
@@ -247,7 +249,7 @@ func RandVecRange(min, max float64) vec3 {
 func RandInUnitSphere() vec3 {
 	for {
 		p := RandVecRange(-1, 1)
-		if p.Len_squared() < 1 {
+		if p.LenSquared() < 1 {
 			return p
 		}
 	}
@@ -284,7 +286,18 @@ func (c colour) WriteColour(samplesPerPixel int) string {
 }
 
 func Reflect(v, n vec3) vec3 {
+	// log.Println("ref:", Sub(v, Mulf(n, 2*Dot(v, n))))
 	return Sub(v, Mulf(n, 2*Dot(v, n)))
+}
+
+func Refract(uv, n vec3, etaiOverEtat float64) vec3 {
+	cosTheta := math.Min(Dot(Neg(uv), n), 1.0)
+	rOutPerpendicular := Mulf(Add(uv, Mulf(n, cosTheta)), etaiOverEtat)
+	rOutParallel := Mulf(n, -math.Sqrt(math.Abs(1.0-rOutPerpendicular.LenSquared())))
+	// log.Println(rOutPerpendicular)
+	// log.Println(rOutParallel)
+	// log.Println("added:", Add(rOutPerpendicular, rOutParallel))
+	return Add(rOutPerpendicular, rOutParallel)
 }
 
 type point3 = vec3
@@ -302,7 +315,7 @@ func (r ray) At(t float64) point3 {
 
 func RayColour(r ray, hittable hittable, depth int) colour {
 	if depth <= 0 {
-		return colour{0, 0, 0}
+		return colour{1, 0, 0}
 	}
 
 	if rec, isHit := hittable.hit2(r, 0.001, math.Inf(1)); isHit {
@@ -313,7 +326,7 @@ func RayColour(r ray, hittable hittable, depth int) colour {
 			return Mul(attenuation, RayColour(scattered, world, depth-1))
 		}
 
-		return colour{0, 0, 0}
+		return colour{0, 1, 0}
 	}
 
 	unitDirection := r.dir.UnitVector()
@@ -354,9 +367,9 @@ type sphere struct {
 
 func (s sphere) hit1(r ray, tMin, tMax float64, rec *hitRecord) bool {
 	oc := Sub(r.orig, s.center)
-	a := r.dir.Len_squared()
+	a := r.dir.LenSquared()
 	halfB := Dot(oc, r.dir)
-	c := oc.Len_squared() - s.radius*s.radius
+	c := oc.LenSquared() - s.radius*s.radius
 	discriminant := halfB*halfB - a*c
 
 	if discriminant < 0 {
@@ -382,9 +395,9 @@ func (s sphere) hit1(r ray, tMin, tMax float64, rec *hitRecord) bool {
 
 func (s sphere) hit2(r ray, tMin, tMax float64) (rec hitRecord, isHit bool) {
 	oc := Sub(r.orig, s.center)
-	a := r.dir.Len_squared()
+	a := r.dir.LenSquared()
 	halfB := Dot(oc, r.dir)
-	c := oc.Len_squared() - s.radius*s.radius
+	c := oc.LenSquared() - s.radius*s.radius
 	discriminant := halfB*halfB - a*c
 
 	if discriminant < 0 {
@@ -453,10 +466,6 @@ type lambertian struct {
 	albedo colour
 }
 
-type metal struct {
-	albedo colour
-}
-
 func (l lambertian) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scattered *ray) bool {
 	scatterDirection := Add(rec.normal, RandUnitVector())
 	// catch degenerate scatter direction
@@ -470,10 +479,41 @@ func (l lambertian) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scatt
 	return true
 }
 
+type metal struct {
+	albedo colour
+	fuzz   float64
+}
+
 func (m metal) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scattered *ray) bool {
 	reflected := Reflect(rIn.dir.UnitVector(), rec.normal)
-	*scattered = ray{rec.p, reflected}
+	*scattered = ray{rec.p, Add(reflected, Mulf(RandInUnitSphere(), m.fuzz))}
 	*attenuation = m.albedo
 
 	return Dot(scattered.dir, rec.normal) > 0
+}
+
+type dielectric struct {
+	// index of refraction
+	ir float64
+}
+
+func (d dielectric) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scattered *ray) bool {
+	*attenuation = colour{1, 1, 1}
+	var refractionRatio float64
+	if rec.isFrontFace {
+		refractionRatio = 1.0 / d.ir
+	} else {
+		refractionRatio = d.ir
+	}
+
+	// refracted := Refract(rIn.dir, rec.normal, refractionRatio)
+	refracted := Refract(rIn.dir, rec.normal, refractionRatio)
+	// log.Println("refracted in scatter:", refracted)
+
+	// reflected := Reflect(rIn.dir.UnitVector(), rec.normal)
+	*scattered = ray{rec.p, refracted}
+
+	// *scattered = ray{rec.p, refracted}
+
+	return true
 }
