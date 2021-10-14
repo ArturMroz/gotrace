@@ -17,20 +17,6 @@ const (
 	imageHeight     = int(imageWidth / aspectRatio)
 	samplesPerPixel = 5
 	maxDepth        = 10
-
-	// camera
-
-	viewportHeight = 2.0
-	viewportWidth  = aspectRatio * viewportHeight
-	focalLength    = 1.0
-)
-
-var (
-	origin          = colour{0, 0, 0}
-	horizontal      = vec3{viewportWidth, 0, 0}
-	vertical        = vec3{0, viewportHeight, 0}
-	lowerLeftCorner = origin.Sub2(horizontal.Div(2), vertical.Div(2), vec3{0, 0, focalLength})
-	world           = hittableList{}
 )
 
 func main() {
@@ -42,22 +28,28 @@ func main() {
 	w := bufio.NewWriter(file)
 	fmt.Fprintf(w, "P3\n%d %d\n255\n", imageWidth, imageHeight)
 
+	world := hittableList{}
+
 	world.objects = append(world.objects, sphere{point3{0, -100.5, -1}, 100, lambertian{colour{.8, .8, 0}}})
 
 	// world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, lambertian{colour{.7, .3, .3}}})
-	world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, dielectric{0.1}})
-	world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, dielectric{0.1}})
+	world.objects = append(world.objects, sphere{point3{0, 0, -1}, 0.5, dielectric{1.5}})
+	world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, dielectric{1.5}})
+	// world.objects = append(world.objects, sphere{point3{-1, 0, -1}, -0.4, dielectric{1.5}})
 	// world.objects = append(world.objects, sphere{point3{-1, 0, -1}, 0.5, metal{colour{.8, .8, .8}, .3}})
 	world.objects = append(world.objects, sphere{point3{1, 0, -1}, 0.5, metal{colour{.8, .6, .2}, 1}})
+
+	cam := newCamera()
 
 	for i := imageHeight - 1; i >= 0; i-- {
 		// log.Println("Scanlines remaining:", imageHeight-i)
 		for j := imageWidth - 1; j >= 0; j-- {
 			c := colour{}
 			for s := 0; s <= samplesPerPixel; s++ {
-				u := (float64(i) + rand.Float64()) / float64(imageHeight)
-				v := (float64(j) + rand.Float64()) / float64(imageWidth)
-				r := ray{origin, lowerLeftCorner.Add2(horizontal.Mulf(v), vertical.Mulf(u)).Sub(origin)}
+				u := (float64(j) + rand.Float64()) / float64(imageWidth)
+				v := (float64(i) + rand.Float64()) / float64(imageHeight)
+				// r := ray{origin, lowerLeftCorner.Add2(horizontal.Mulf(v), vertical.Mulf(u)).Sub(origin)}
+				r := cam.getRay(u, v)
 				c = Add(c, RayColour(r, world, maxDepth))
 			}
 
@@ -82,6 +74,9 @@ func clamp(x, min, max float64) float64 {
 type vec3 struct {
 	x, y, z float64
 }
+
+type point3 = vec3
+type colour = vec3
 
 func (v vec3) Add(u vec3) vec3 {
 	return vec3{
@@ -285,6 +280,16 @@ func (c colour) WriteColour(samplesPerPixel int) string {
 	)
 }
 
+type ray struct {
+	orig point3
+	dir  vec3
+}
+
+func (r ray) At(t float64) point3 {
+	// return r.orig.Add(r.dir.Mulf(t))
+	return Add(r.orig, Mulf(r.dir, t))
+}
+
 func Reflect(v, n vec3) vec3 {
 	// log.Println("ref:", Sub(v, Mulf(n, 2*Dot(v, n))))
 	return Sub(v, Mulf(n, 2*Dot(v, n)))
@@ -300,17 +305,12 @@ func Refract(uv, n vec3, etaiOverEtat float64) vec3 {
 	return Add(rOutPerpendicular, rOutParallel)
 }
 
-type point3 = vec3
-type colour = vec3
-
-type ray struct {
-	orig point3
-	dir  vec3
-}
-
-func (r ray) At(t float64) point3 {
-	// return r.orig.Add(r.dir.Mulf(t))
-	return Add(r.orig, Mulf(r.dir, t))
+func Refract2(v vec3, n vec3, nRatio float64) vec3 {
+	cosTheta := Dot(Neg(v), n)
+	parallel := Mulf(Add(v, Mulf(n, cosTheta)), nRatio)
+	sqrt := -math.Sqrt(1.0 - parallel.LenSquared())
+	normal := Mulf(n, sqrt)
+	return Add(normal, parallel)
 }
 
 func RayColour(r ray, hittable hittable, depth int) colour {
@@ -506,14 +506,60 @@ func (d dielectric) Scatter(rIn *ray, rec *hitRecord, attenuation *colour, scatt
 		refractionRatio = d.ir
 	}
 
+	unitDir := rIn.dir.UnitVector()
+	cosTheta := math.Min(Dot(Neg(unitDir), rec.normal), 1.0)
+	sinTheta := math.Sqrt(1.0 - cosTheta*cosTheta)
+
+	cannotRefract := refractionRatio*sinTheta > 1
+
+	var direction vec3
+	if cannotRefract || reflectance(cosTheta, refractionRatio) > rand.Float64() {
+		direction = Reflect(unitDir, rec.normal)
+	} else {
+		direction = Refract2(rIn.dir, rec.normal, refractionRatio)
+	}
+
+	// refracted := Refract(rIn.dir.UnitVector(), rec.normal, refractionRatio)
 	// refracted := Refract(rIn.dir, rec.normal, refractionRatio)
-	refracted := Refract(rIn.dir, rec.normal, refractionRatio)
 	// log.Println("refracted in scatter:", refracted)
 
-	// reflected := Reflect(rIn.dir.UnitVector(), rec.normal)
-	*scattered = ray{rec.p, refracted}
-
-	// *scattered = ray{rec.p, refracted}
+	*scattered = ray{rec.p, direction}
 
 	return true
+}
+
+func reflectance(cosine, refIdx float64) float64 {
+	// Shilck's approximation for reflectance
+	r0 := (1 - refIdx) / (1 + refIdx)
+	r0 *= r0
+	return r0 + (1-r0)*math.Pow((1-cosine), 5)
+}
+
+type camera struct {
+	origin          point3
+	lowerLeftCorner point3
+	horizontal      vec3
+	vertical        vec3
+}
+
+func newCamera() camera {
+	aspectRatio := 16.0 / 9.0
+	viewportHeight := 2.0
+	viewportWidth := aspectRatio * viewportHeight
+	focalLength := 1.0
+
+	c := camera{
+		origin:     colour{0, 0, 0},
+		horizontal: vec3{viewportWidth, 0, 0},
+		vertical:   vec3{0, viewportHeight, 0},
+	}
+
+	c.lowerLeftCorner = c.origin.Sub2(c.horizontal.Div(2), c.vertical.Div(2), vec3{0, 0, focalLength})
+
+	return c
+}
+
+func (c camera) getRay(u, v float64) ray {
+	dir := c.lowerLeftCorner.Add(c.horizontal.Mulf(u)).Add(c.vertical.Mulf(v)).Sub(c.origin)
+	return ray{c.origin, dir}
 }
